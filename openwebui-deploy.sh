@@ -447,6 +447,33 @@ EOF
     
     # Create or update docker-compose.yml
     log "INFO" "Creating docker-compose.yml file..."
+    
+    # Handle the Redis service template separately
+    redis_service=""
+    if [ "$enable_websocket" == "on" ]; then
+        redis_service=$(cat << 'REDIS_SERVICE'
+  redis:
+    image: redis:alpine
+    container_name: redis
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+REDIS_SERVICE
+)
+    fi
+    
+    # Handle volume configuration
+    redis_volume=""
+    if [ "$enable_websocket" == "on" ]; then
+        redis_volume="  redis-data: {}"
+    fi
+    
+    # Create the docker-compose.yml file
     cat > "$DOCKER_COMPOSE_FILE" << EOF
 services:
   ollama:
@@ -485,27 +512,12 @@ $([ "$enable_image_generation" == "on" ] && echo "      - 'ENABLE_IMAGE_GENERATI
     extra_hosts:
       - host.docker.internal:host-gateway
     restart: unless-stopped
-
-$(if [ "$enable_websocket" == "on" ]; then
-cat << REDIS_SERVICE
-  redis:
-    image: redis:alpine
-    container_name: redis
-    restart: unless-stopped
-    volumes:
-      - redis-data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-REDIS_SERVICE
-fi)
+$redis_service
 
 volumes:
   ollama: {}
   open-webui: {}
-$([ "$enable_websocket" == "on" ] && echo "  redis-data: {}")
+$redis_volume
 EOF
     
     log "INFO" "Configuration files created successfully."
