@@ -476,7 +476,6 @@ terminal_checklist() {
       selected+=("$tag")
     fi
   done
-  
   # Add default selected items if no selection made
   if [ ${#selected[@]} -eq 0 ]; then
     for ((i=0; i<${#items[@]}; i+=3)); do
@@ -485,7 +484,8 @@ terminal_checklist() {
         tag="${items[i]}"
         selected+=("$tag")
       fi
-    fi
+    done
+  fi
   fi
   
   # Return the selected tags in the format dialog would
