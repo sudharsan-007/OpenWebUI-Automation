@@ -486,7 +486,6 @@ terminal_checklist() {
       fi
     done
   fi
-  fi
   
   # Return the selected tags in the format dialog would
   echo "${selected[*]}"
