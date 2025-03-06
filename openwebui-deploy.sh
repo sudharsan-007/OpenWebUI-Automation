@@ -219,7 +219,7 @@ configure_openwebui() {
     if ! command_exists dialog; then
         log "ERROR" "Dialog is required for configuration. Please install it and try again."
         exit 1
-    }
+    fi
     
     # Initialize configuration variables with defaults
     local open_ai_api_enabled="off"
