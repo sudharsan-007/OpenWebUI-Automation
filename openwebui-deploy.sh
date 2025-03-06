@@ -1,614 +1,1344 @@
 #!/bin/bash
+#
+# Open WebUI Deployment Script
+# Version: 1.0.0
+#
+# This script automates the deployment of Open WebUI with Docker Compose,
+# including configuration setup, dependency checks, and environment generation.
+# 
+# Usage: ./openwebui-deploy.sh [OPTIONS]
+# Options:
+#   --non-interactive       Run without interactive prompts (uses defaults or config file)
+#   --config FILE           Specify a configuration file to use
+#   --port PORT             Specify the web UI port (default: 3000)
+#   --ollama-url URL        Specify Ollama URL (default: http://ollama:11434)
+#   --no-ollama             Deploy without Ollama (use external Ollama instance)
+#   --help                  Display this help message
 
-# OpenWebUI Automated Deployment Script
-# This script automates the deployment of OpenWebUI with a user-friendly TUI interface
+# Strict mode
+set -eo pipefail
 
-VERSION="1.0.0"
-SCRIPT_NAME=$(basename "$0")
-VERBOSE=false
-CONFIG_ONLY=false
-REPO_URL="https://github.com/open-webui/open-webui.git"
-REPO_DIR="open-webui"
-ENV_FILE=".env"
-DOCKER_COMPOSE_FILE="docker-compose.yml"
-LOG_FILE="openwebui-deploy.log"
+# Script information
+SCRIPT_VERSION="1.0.0"
+SCRIPT_NAME="$(basename "$0")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Function to display help message
+# Default configuration values
+declare -A CONFIG
+CONFIG_FILE="${SCRIPT_DIR}/openwebui-config.ini"
+DOCKER_COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
+ENV_FILE="${SCRIPT_DIR}/.env"
+NON_INTERACTIVE=false
+SHOW_HELP=false
+
+# Color definitions
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+#######################################
+# Utility Functions
+#######################################
+
+# Log message to console with timestamp
+log() {
+    local level="$1"
+    local message="$2"
+    local color=""
+    
+    case "$level" in
+        "INFO")
+            color="$BLUE"
+            ;;
+        "SUCCESS")
+            color="$GREEN"
+            ;;
+        "WARNING")
+            color="$YELLOW"
+            ;;
+        "ERROR")
+            color="$RED"
+            ;;
+        *)
+            color="$NC"
+            ;;
+    esac
+    
+    echo -e "[$(date +'%Y-%m-%d %H:%M:%S')] ${color}${level}${NC}: $message"
+}
+
+# Print error message and exit
+error_exit() {
+    log "ERROR" "$1"
+    exit 1
+}
+
+# Print help message
 show_help() {
     cat << EOF
-Usage: $SCRIPT_NAME [OPTIONS]
+Open WebUI Deployment Script v${SCRIPT_VERSION}
 
-Automated deployment script for OpenWebUI on cloud servers.
+Usage: ${SCRIPT_NAME} [OPTIONS]
 
 Options:
-  -h, --help         Show this help message and exit
-  -v, --verbose      Enable verbose output
-  -c, --config-only  Only generate configuration files without starting services
-  --version          Show version information
+  --non-interactive       Run without interactive prompts (uses defaults or config file)
+  --config FILE           Specify a configuration file to use
+  --port PORT             Specify the web UI port (default: 3000)
+  --ollama-url URL        Specify Ollama URL (default: http://ollama:11434)
+  --no-ollama             Deploy without Ollama (use external Ollama instance)
+  --help                  Display this help message
 
-Example:
-  $SCRIPT_NAME --verbose
-
-This script will:
-1. Check for prerequisites (Docker, Docker Compose, Dialog, Git, etc.)
-2. Clone the OpenWebUI repository
-3. Guide you through configuration using a TUI
-4. Create necessary configuration files
-5. Deploy OpenWebUI using Docker Compose
+Examples:
+  ${SCRIPT_NAME}                             Run interactive setup
+  ${SCRIPT_NAME} --non-interactive           Deploy with default settings
+  ${SCRIPT_NAME} --config my-config.ini      Use custom configuration file
+  ${SCRIPT_NAME} --port 8080                 Deploy with port 8080
 
 EOF
 }
 
-# Function to show version
-show_version() {
-    echo "$SCRIPT_NAME version $VERSION"
+# Confirm prompt with yes/no
+confirm() {
+    local message="$1"
+    local default="${2:-y}"
+    
+    if [ "$NON_INTERACTIVE" = true ]; then
+        case "$default" in
+            [Yy]* ) return 0 ;;
+            * ) return 1 ;;
+        esac
+    fi
+    
+    local prompt
+    
+    if [ "$default" = "y" ]; then
+        prompt="[Y/n]"
+    else
+        prompt="[y/N]"
+    fi
+    
+    while true; do
+        read -p "$message $prompt " response
+        
+        # Default if empty
+        if [ -z "$response" ]; then
+            response="$default"
+        fi
+        
+        case "$response" in
+            [Yy]* ) return 0 ;;
+            [Nn]* ) return 1 ;;
+            * ) echo "Please answer yes or no." ;;
+        esac
+    done
 }
 
-# Function to log messages
-log() {
-    local level=$1
-    shift
-    local message="$@"
-    local timestamp=$(date +"%Y-%m-%d %H:%M:%S")
+# Get user input with default value
+get_input() {
+    local message="$1"
+    local default="$2"
+    local variable="$3"
+    local hide_input="${4:-false}"
+    local result=""
     
-    echo "[$timestamp] [$level] $message" >> "$LOG_FILE"
+    if [ "$NON_INTERACTIVE" = true ]; then
+        # Use the current value or default
+        result="${CONFIG[$variable]:-$default}"
+    else
+        local prompt
+        
+        if [ -n "$default" ]; then
+            prompt="$message [$default]: "
+        else
+            prompt="$message: "
+        fi
+        
+        if [ "$hide_input" = true ]; then
+            read -s -p "$prompt" result
+            echo "" # Add a newline after hidden input
+        else
+            read -p "$prompt" result
+        fi
+        
+        # Use default if input is empty
+        if [ -z "$result" ]; then
+            result="$default"
+        fi
+    fi
     
-    if [[ "$VERBOSE" == "true" || "$level" != "DEBUG" ]]; then
-        case "$level" in
-            "ERROR")   echo -e "\e[31m[$level] $message\e[0m" ;;
-            "WARNING") echo -e "\e[33m[$level] $message\e[0m" ;;
-            "INFO")    echo -e "\e[32m[$level] $message\e[0m" ;;
-            "DEBUG")   echo -e "\e[36m[$level] $message\e[0m" ;;
-            *)         echo "[$level] $message" ;;
+    # Store result in configuration
+    CONFIG["$variable"]="$result"
+}
+
+# Get yes/no input and convert to true/false
+get_boolean_input() {
+    local message="$1"
+    local default="$2"
+    local variable="$3"
+    
+    if [ "$NON_INTERACTIVE" = true ]; then
+        return
+    fi
+    
+    local default_text=""
+    if [ "$default" = true ] || [ "$default" = "true" ]; then
+        default_text="Y/n"
+    else
+        default_text="y/N"
+    fi
+    
+    while true; do
+        read -p "$message [$default_text]: " result
+        
+        # Use default if input is empty
+        if [ -z "$result" ]; then
+            if [ "$default" = true ] || [ "$default" = "true" ]; then
+                CONFIG["$variable"]=true
+            else
+                CONFIG["$variable"]=false
+            fi
+            return
+        fi
+        
+        case "$result" in
+            [Yy]* )
+                CONFIG["$variable"]=true
+                return
+                ;;
+            [Nn]* )
+                CONFIG["$variable"]=false
+                return
+                ;;
+            * )
+                echo "Please answer yes or no."
+                ;;
         esac
+    done
+}
+
+# Display a spinner for commands that take time
+spinner() {
+    local pid=$1
+    local delay=0.1
+    local spinstr='|/-\'
+    
+    # Return if running in non-interactive mode
+    if [ "$NON_INTERACTIVE" = true ]; then
+        wait $pid
+        return $?
+    fi
+    
+    while ps -p $pid > /dev/null; do
+        local temp=${spinstr#?}
+        printf " [%c]  " "$spinstr"
+        spinstr=$temp${spinstr%"$temp"}
+        sleep $delay
+        printf "\b\b\b\b\b\b"
+    done
+    printf "    \b\b\b\b"
+    
+    wait $pid
+    return $?
+}
+
+# Run a command with a spinner
+run_with_spinner() {
+    local message="$1"
+    shift
+    
+    echo -ne "$message... "
+    
+    # Run the command
+    "$@" > /dev/null 2>&1 &
+    
+    # Display spinner
+    spinner $!
+    local status=$?
+    
+    if [ $status -eq 0 ]; then
+        echo -e "${GREEN}Done${NC}"
+    else
+        echo -e "${RED}Failed${NC}"
+        return $status
     fi
 }
 
-# Parse command line arguments
-parse_args() {
-    while [[ "$#" -gt 0 ]]; do
-        case $1 in
-            -h|--help) show_help; exit 0 ;;
-            -v|--verbose) VERBOSE=true ;;
-            -c|--config-only) CONFIG_ONLY=true ;;
-            --version) show_version; exit 0 ;;
-            *) log "ERROR" "Unknown parameter: $1"; show_help; exit 1 ;;
+#######################################
+# System Check Functions
+#######################################
+
+# Check if command exists
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# Check system requirements
+check_system_requirements() {
+    log "INFO" "Checking system requirements..."
+    
+    # Check for Docker
+    if ! command_exists docker; then
+        log "ERROR" "Docker is not installed. Please install Docker before continuing."
+        
+        if confirm "Would you like to install Docker now?"; then
+            install_docker
+        else
+            error_exit "Docker is required to continue."
+        fi
+    else
+        log "INFO" "Docker is installed."
+        
+        # Check if Docker daemon is running
+        if ! docker info > /dev/null 2>&1; then
+            log "ERROR" "Docker daemon is not running."
+            error_exit "Please start Docker daemon before continuing."
+        fi
+    fi
+    
+    # Check for Docker Compose
+    if ! docker compose version > /dev/null 2>&1; then
+        if ! command_exists docker-compose; then
+            log "ERROR" "Docker Compose is not installed."
+            
+            if confirm "Would you like to install Docker Compose now?"; then
+                install_docker_compose
+            else
+                error_exit "Docker Compose is required to continue."
+            fi
+        else
+            log "INFO" "Using legacy docker-compose."
+        fi
+    else
+        log "INFO" "Docker Compose is installed."
+    fi
+    
+    # Check system resources
+    check_system_resources
+    
+    log "SUCCESS" "System requirements met."
+}
+
+# Install Docker
+install_docker() {
+    log "INFO" "Installing Docker..."
+    
+    # Detect OS
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        OS=$ID
+    else
+        error_exit "Unsupported OS. Please install Docker manually and run this script again."
+    fi
+    
+    case "$OS" in
+        ubuntu|debian)
+            run_with_spinner "Updating package lists" sudo apt-get update
+            run_with_spinner "Installing prerequisites" sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release
+            
+            # Add Docker's official GPG key
+            curl -fsSL https://download.docker.com/linux/$OS/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+            
+            # Set up the stable repository
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/$OS $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+            
+            run_with_spinner "Updating package lists" sudo apt-get update
+            run_with_spinner "Installing Docker" sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+            ;;
+            
+        centos|rhel|fedora)
+            run_with_spinner "Installing prerequisites" sudo yum install -y yum-utils
+            run_with_spinner "Adding Docker repository" sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+            run_with_spinner "Installing Docker" sudo yum install -y docker-ce docker-ce-cli containerd.io
+            ;;
+            
+        *)
+            error_exit "Unsupported OS. Please install Docker manually and run this script again."
+            ;;
+    esac
+    
+    # Start and enable Docker service
+    run_with_spinner "Starting Docker service" sudo systemctl start docker
+    run_with_spinner "Enabling Docker service" sudo systemctl enable docker
+    
+    # Add current user to Docker group
+    if ! groups | grep -q docker; then
+        run_with_spinner "Adding user to Docker group" sudo usermod -aG docker "$USER"
+        log "WARNING" "Please log out and log back in for Docker group changes to take effect."
+    fi
+    
+    log "SUCCESS" "Docker installed successfully."
+}
+
+# Install Docker Compose
+install_docker_compose() {
+    log "INFO" "Installing Docker Compose..."
+    
+    # Get latest Docker Compose version
+    COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep 'tag_name' | cut -d\" -f4)
+    
+    if [ -z "$COMPOSE_VERSION" ]; then
+        COMPOSE_VERSION="v2.18.1"  # Fallback version
+        log "WARNING" "Could not determine latest Docker Compose version. Using $COMPOSE_VERSION."
+    fi
+    
+    # Download and install Docker Compose
+    sudo curl -L "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    
+    sudo chmod +x /usr/local/bin/docker-compose
+    
+    # Create symbolic link
+    sudo ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose
+    
+    # Check if installation was successful
+    if command_exists docker-compose; then
+        log "SUCCESS" "Docker Compose installed successfully."
+    else
+        error_exit "Failed to install Docker Compose."
+    fi
+}
+
+# Check system resources
+check_system_resources() {
+    log "INFO" "Checking system resources..."
+    
+    # Check CPU cores
+    CPU_CORES=$(nproc)
+    if [ "$CPU_CORES" -lt 2 ]; then
+        log "WARNING" "Only $CPU_CORES CPU core(s) detected. Performance may be affected."
+    else
+        log "INFO" "CPU: $CPU_CORES cores (OK)"
+    fi
+    
+    # Check available memory
+    if command_exists free; then
+        TOTAL_MEM=$(free -m | awk '/^Mem:/{print $2}')
+        if [ "$TOTAL_MEM" -lt 2048 ]; then
+            log "WARNING" "Only $TOTAL_MEM MB of RAM detected. Performance may be affected."
+        else
+            log "INFO" "Memory: $TOTAL_MEM MB (OK)"
+        fi
+    else
+        log "WARNING" "Could not determine available memory."
+    fi
+    
+    # Check available disk space
+    DISK_SPACE=$(df -h . | awk 'NR==2 {print $4}')
+    log "INFO" "Available disk space: $DISK_SPACE"
+}
+
+#######################################
+# Configuration Functions
+#######################################
+
+# Initialize configuration with default values
+init_config() {
+    log "INFO" "Initializing configuration with defaults..."
+    
+    # Basic settings
+    CONFIG["webui_port"]="3000"
+    CONFIG["enable_auth"]="true"
+    CONFIG["enable_signup"]="false"
+    CONFIG["allow_all_models"]="false"
+    CONFIG["secret_key"]=$(openssl rand -hex 32)
+    
+    # API settings
+    CONFIG["enable_ollama"]="true"
+    CONFIG["ollama_url"]="http://ollama:11434"
+    CONFIG["enable_openai"]="false"
+    CONFIG["openai_api_key"]=""
+    CONFIG["enable_claude"]="false"
+    CONFIG["claude_api_key"]=""
+    CONFIG["enable_openrouter"]="false"
+    CONFIG["openrouter_api_key"]=""
+    CONFIG["enable_gemini"]="false"
+    CONFIG["gemini_api_key"]=""
+    CONFIG["enable_custom_api"]="false"
+    CONFIG["custom_api_url"]=""
+    
+    # Feature settings
+    CONFIG["enable_web_search"]="true"
+    CONFIG["web_search_engine"]="duckduckgo"
+    CONFIG["search_result_count"]="3"
+    
+    CONFIG["enable_speech_to_text"]="true"
+    CONFIG["stt_engine"]="local_whisper"
+    CONFIG["whisper_model"]="base"
+    
+    CONFIG["enable_text_to_speech"]="true"
+    CONFIG["tts_engine"]="web_api"
+    CONFIG["tts_voice"]="alloy"
+    CONFIG["tts_model"]="tts-1"
+    
+    CONFIG["enable_pipelines"]="true"
+    CONFIG["pipelines_port"]="9099"
+    
+    CONFIG["enable_image_generation"]="false"
+    CONFIG["image_generation_engine"]="openai"
+    CONFIG["image_model"]=""
+    CONFIG["image_size"]="512x512"
+    
+    CONFIG["enable_rag"]="true"
+    CONFIG["enable_channels"]="true"
+    
+    # System resources
+    CONFIG["memory_limit"]="4G"
+    CONFIG["cpu_limit"]="2"
+    
+    # Security settings
+    CONFIG["enable_api_key"]="true"
+    CONFIG["enable_api_key_restrictions"]="false"
+    CONFIG["cors_allow_origin"]="*"
+    
+    log "SUCCESS" "Configuration initialized with defaults."
+}
+
+# Load configuration from file
+load_config() {
+    local config_file="$1"
+    
+    if [ ! -f "$config_file" ]; then
+        log "WARNING" "Configuration file not found: $config_file"
+        return 1
+    fi
+    
+    log "INFO" "Loading configuration from: $config_file"
+    
+    local section=""
+    
+    while IFS='=' read -r key value || [ -n "$key" ]; do
+        # Skip comments and empty lines
+        [[ $key == \#* ]] || [[ -z "$key" ]] && continue
+        
+        # Handle section headers
+        if [[ $key =~ ^\[(.*)\]$ ]]; then
+            section=$(echo "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')
+            continue
+        fi
+        
+        # Trim whitespace
+        key=$(echo "$key" | xargs)
+        value=$(echo "$value" | xargs)
+        
+        # Store in config array
+        CONFIG["$key"]="$value"
+    done < "$config_file"
+    
+    log "SUCCESS" "Configuration loaded successfully."
+    return 0
+}
+
+# Save configuration to file
+save_config() {
+    local config_file="$1"
+    
+    log "INFO" "Saving configuration to: $config_file"
+    
+    # Create backup if file exists
+    if [ -f "$config_file" ]; then
+        cp "$config_file" "${config_file}.bak"
+        log "INFO" "Created backup: ${config_file}.bak"
+    fi
+    
+    # Write config file
+    cat > "$config_file" << EOL
+# Open WebUI Configuration
+# Generated on $(date)
+# This file is used by the Open WebUI deployment script
+
+[Basic]
+webui_port=${CONFIG["webui_port"]}
+enable_auth=${CONFIG["enable_auth"]}
+enable_signup=${CONFIG["enable_signup"]}
+allow_all_models=${CONFIG["allow_all_models"]}
+
+[API]
+enable_ollama=${CONFIG["enable_ollama"]}
+ollama_url=${CONFIG["ollama_url"]}
+enable_openai=${CONFIG["enable_openai"]}
+openai_api_key=${CONFIG["openai_api_key"]}
+enable_claude=${CONFIG["enable_claude"]}
+claude_api_key=${CONFIG["claude_api_key"]}
+enable_openrouter=${CONFIG["enable_openrouter"]}
+openrouter_api_key=${CONFIG["openrouter_api_key"]}
+enable_gemini=${CONFIG["enable_gemini"]}
+gemini_api_key=${CONFIG["gemini_api_key"]}
+enable_custom_api=${CONFIG["enable_custom_api"]}
+custom_api_url=${CONFIG["custom_api_url"]}
+
+[Features]
+enable_web_search=${CONFIG["enable_web_search"]}
+web_search_engine=${CONFIG["web_search_engine"]}
+search_result_count=${CONFIG["search_result_count"]}
+enable_speech_to_text=${CONFIG["enable_speech_to_text"]}
+stt_engine=${CONFIG["stt_engine"]}
+whisper_model=${CONFIG["whisper_model"]}
+enable_text_to_speech=${CONFIG["enable_text_to_speech"]}
+tts_engine=${CONFIG["tts_engine"]}
+tts_voice=${CONFIG["tts_voice"]}
+tts_model=${CONFIG["tts_model"]}
+enable_pipelines=${CONFIG["enable_pipelines"]}
+pipelines_port=${CONFIG["pipelines_port"]}
+enable_image_generation=${CONFIG["enable_image_generation"]}
+image_generation_engine=${CONFIG["image_generation_engine"]}
+image_model=${CONFIG["image_model"]}
+image_size=${CONFIG["image_size"]}
+enable_rag=${CONFIG["enable_rag"]}
+enable_channels=${CONFIG["enable_channels"]}
+
+[Resources]
+memory_limit=${CONFIG["memory_limit"]}
+cpu_limit=${CONFIG["cpu_limit"]}
+
+[Security]
+secret_key=${CONFIG["secret_key"]}
+enable_api_key=${CONFIG["enable_api_key"]}
+enable_api_key_restrictions=${CONFIG["enable_api_key_restrictions"]}
+cors_allow_origin=${CONFIG["cors_allow_origin"]}
+EOL
+    
+    log "SUCCESS" "Configuration saved successfully."
+}
+
+# Interactive configuration setup
+configure_interactively() {
+    log "INFO" "Starting interactive configuration..."
+    
+    echo -e "\n${BLUE}=== Basic Configuration ===${NC}"
+    get_input "Enter the port for Open WebUI" "${CONFIG["webui_port"]}" "webui_port"
+    get_boolean_input "Enable authentication" "${CONFIG["enable_auth"]}" "enable_auth"
+    
+    if [ "${CONFIG["enable_auth"]}" = true ]; then
+        get_boolean_input "Enable user registration" "${CONFIG["enable_signup"]}" "enable_signup"
+        get_boolean_input "Allow all users to access all models" "${CONFIG["allow_all_models"]}" "allow_all_models"
+    fi
+    
+    echo -e "\n${BLUE}=== API Integration ===${NC}"
+    get_boolean_input "Enable Ollama (local LLM hosting)" "${CONFIG["enable_ollama"]}" "enable_ollama"
+    
+    if [ "${CONFIG["enable_ollama"]}" = true ]; then
+        get_input "Ollama URL" "${CONFIG["ollama_url"]}" "ollama_url"
+    fi
+    
+    get_boolean_input "Enable OpenAI API" "${CONFIG["enable_openai"]}" "enable_openai"
+    
+    if [ "${CONFIG["enable_openai"]}" = true ]; then
+        get_input "OpenAI API Key" "${CONFIG["openai_api_key"]}" "openai_api_key" true
+    fi
+    
+    get_boolean_input "Enable Claude API" "${CONFIG["enable_claude"]}" "enable_claude"
+    
+    if [ "${CONFIG["enable_claude"]}" = true ]; then
+        get_input "Claude API Key" "${CONFIG["claude_api_key"]}" "claude_api_key" true
+    fi
+    
+    echo -e "\n${BLUE}=== Feature Configuration ===${NC}"
+    get_boolean_input "Enable Web Search (RAG)" "${CONFIG["enable_web_search"]}" "enable_web_search"
+    
+    if [ "${CONFIG["enable_web_search"]}" = true ]; then
+        get_input "Web Search Engine (duckduckgo, google, bing, searxng, brave, tavily)" "${CONFIG["web_search_engine"]}" "web_search_engine"
+        get_input "Number of search results" "${CONFIG["search_result_count"]}" "search_result_count"
+        
+        # Additional settings based on search engine
+        case "${CONFIG["web_search_engine"]}" in
+            google)
+                get_input "Google PSE API Key" "" "google_pse_api_key" true
+                get_input "Google PSE Engine ID" "" "google_pse_engine_id"
+                ;;
+            bing)
+                get_input "Bing Search API Key" "" "bing_search_api_key" true
+                ;;
+            searxng)
+                get_input "SearXNG Query URL" "" "searxng_query_url"
+                ;;
+            brave)
+                get_input "Brave Search API Key" "" "brave_search_api_key" true
+                ;;
+            tavily)
+                get_input "Tavily API Key" "" "tavily_api_key" true
+                ;;
+        esac
+    fi
+    
+    get_boolean_input "Enable Speech-to-Text" "${CONFIG["enable_speech_to_text"]}" "enable_speech_to_text"
+    
+    if [ "${CONFIG["enable_speech_to_text"]}" = true ]; then
+        get_input "STT Engine (local_whisper, openai, web_api)" "${CONFIG["stt_engine"]}" "stt_engine"
+        
+        if [ "${CONFIG["stt_engine"]}" = "local_whisper" ]; then
+            get_input "Whisper Model Size (base, small, medium, large)" "${CONFIG["whisper_model"]}" "whisper_model"
+        fi
+    fi
+    
+    get_boolean_input "Enable Text-to-Speech" "${CONFIG["enable_text_to_speech"]}" "enable_text_to_speech"
+    
+    if [ "${CONFIG["enable_text_to_speech"]}" = true ]; then
+        get_input "TTS Engine (web_api, openai, azure, elevenlabs)" "${CONFIG["tts_engine"]}" "tts_engine"
+        
+        if [ "${CONFIG["tts_engine"]}" = "openai" ]; then
+            get_input "TTS Voice (alloy, echo, fable, onyx, nova, shimmer)" "${CONFIG["tts_voice"]}" "tts_voice"
+            get_input "TTS Model (tts-1, tts-1-hd)" "${CONFIG["tts_model"]}" "tts_model"
+        fi
+    fi
+    
+    get_boolean_input "Enable Pipelines (Functions)" "${CONFIG["enable_pipelines"]}" "enable_pipelines"
+    
+    if [ "${CONFIG["enable_pipelines"]}" = true ]; then
+        get_input "Pipelines Port" "${CONFIG["pipelines_port"]}" "pipelines_port"
+    fi
+    
+    get_boolean_input "Enable Image Generation" "${CONFIG["enable_image_generation"]}" "enable_image_generation"
+    
+    if [ "${CONFIG["enable_image_generation"]}" = true ]; then
+        get_input "Image Generation Engine (openai, automatic1111, comfyui)" "${CONFIG["image_generation_engine"]}" "image_generation_engine"
+        get_input "Image Size (512x512, 1024x1024)" "${CONFIG["image_size"]}" "image_size"
+    fi
+    
+    get_boolean_input "Enable RAG Document Processing" "${CONFIG["enable_rag"]}" "enable_rag"
+    get_boolean_input "Enable Channel Support" "${CONFIG["enable_channels"]}" "enable_channels"
+    
+    echo -e "\n${BLUE}=== System Resource Configuration ===${NC}"
+    get_input "Memory Limit (e.g., 4G, 8G)" "${CONFIG["memory_limit"]}" "memory_limit"
+    get_input "CPU Limit (number of cores)" "${CONFIG["cpu_limit"]}" "cpu_limit"
+    
+    if confirm "Would you like to save this configuration for future use?"; then
+        save_config "$CONFIG_FILE"
+    fi
+    
+    log "SUCCESS" "Configuration completed."
+}
+
+#######################################
+# Docker Compose Functions
+#######################################
+
+# Generate Docker Compose file
+generate_docker_compose() {
+    local output_file="$1"
+    
+    log "INFO" "Generating Docker Compose file: $output_file"
+    
+    # Start with version and services
+    cat > "$output_file" << EOL
+version: '3'
+
+services:
+EOL
+    
+    # Add Ollama if enabled
+    if [ "${CONFIG["enable_ollama"]}" = true ]; then
+        cat >> "$output_file" << EOL
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    volumes:
+      - ollama:/root/.ollama
+    restart: unless-stopped
+
+EOL
+    fi
+    
+    # Add Open WebUI
+    cat >> "$output_file" << EOL
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+EOL
+    
+    # Add dependencies
+    if [ "${CONFIG["enable_ollama"]}" = true ] || [ "${CONFIG["enable_pipelines"]}" = true ]; then
+        echo "    depends_on:" >> "$output_file"
+        
+        if [ "${CONFIG["enable_ollama"]}" = true ]; then
+            echo "      - ollama" >> "$output_file"
+        fi
+        
+        if [ "${CONFIG["enable_pipelines"]}" = true ]; then
+            echo "      - redis" >> "$output_file"
+        fi
+    fi
+    
+    # Add port mapping
+    cat >> "$output_file" << EOL
+    ports:
+      - "${CONFIG["webui_port"]}:8080"
+    volumes:
+      - open-webui:/app/backend/data
+    env_file:
+      - .env
+EOL
+    
+    # Add Ollama URL if Ollama is enabled
+    if [ "${CONFIG["enable_ollama"]}" = true ]; then
+        cat >> "$output_file" << EOL
+    environment:
+      - "OLLAMA_BASE_URL=${CONFIG["ollama_url"]}"
+EOL
+    fi
+    
+    # Add resource limits
+    cat >> "$output_file" << EOL
+    mem_limit: ${CONFIG["memory_limit"]}
+    cpus: ${CONFIG["cpu_limit"]}
+    restart: unless-stopped
+EOL
+    
+    # Add Pipelines if enabled
+    if [ "${CONFIG["enable_pipelines"]}" = true ]; then
+        cat >> "$output_file" << EOL
+
+  pipelines:
+    image: ghcr.io/open-webui/pipelines:main
+    container_name: pipelines
+    ports:
+      - "${CONFIG["pipelines_port"]}:9099"
+    volumes:
+      - pipelines:/app/pipelines
+    restart: unless-stopped
+    depends_on:
+      - open-webui
+      - redis
+      
+  redis:
+    image: redis:alpine
+    container_name: redis
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+EOL
+    fi
+    
+    # Add volumes
+    cat >> "$output_file" << EOL
+
+volumes:
+EOL
+    
+    if [ "${CONFIG["enable_ollama"]}" = true ]; then
+        echo "  ollama: {}" >> "$output_file"
+    fi
+    
+    echo "  open-webui: {}" >> "$output_file"
+    
+    if [ "${CONFIG["enable_pipelines"]}" = true ]; then
+        echo "  pipelines: {}" >> "$output_file"
+        echo "  redis-data: {}" >> "$output_file"
+    fi
+    
+    log "SUCCESS" "Docker Compose file generated successfully."
+}
+
+# Generate environment file
+generate_env_file() {
+    local output_file="$1"
+    
+    log "INFO" "Generating environment file: $output_file"
+    
+    # Start with basic configuration
+    cat > "$output_file" << EOL
+# Open WebUI Environment Configuration
+# Generated by ${SCRIPT_NAME} on $(date)
+
+# Basic Configuration
+OPEN_WEBUI_PORT=${CONFIG["webui_port"]}
+WEBUI_AUTH=${CONFIG["enable_auth"]}
+ENABLE_SIGNUP=${CONFIG["enable_signup"]}
+BYPASS_MODEL_ACCESS_CONTROL=${CONFIG["allow_all_models"]}
+WEBUI_SECRET_KEY=${CONFIG["secret_key"]}
+
+# API Configuration
+EOL
+    
+    # Add Ollama configuration
+    if [ "${CONFIG["enable_ollama"]}" = true ]; then
+        echo "OLLAMA_BASE_URL=${CONFIG["ollama_url"]}" >> "$output_file"
+    fi
+    
+    # Add OpenAI configuration
+    if [ "${CONFIG["enable_openai"]}" = true ]; then
+        echo "OPENAI_API_BASE_URL=https://api.openai.com/v1" >> "$output_file"
+        echo "OPENAI_API_KEY=${CONFIG["openai_api_key"]}" >> "$output_file"
+    fi
+    
+    # Add Claude configuration
+    if [ "${CONFIG["enable_claude"]}" = true ]; then
+        echo "ANTHROPIC_API_KEY=${CONFIG["claude_api_key"]}" >> "$output_file"
+    fi
+    
+    # Add OpenRouter configuration
+    if [ "${CONFIG["enable_openrouter"]}" = true ]; then
+        echo "OPENROUTER_API_KEY=${CONFIG["openrouter_api_key"]}" >> "$output_file"
+    fi
+    
+    # Add Gemini configuration
+    if [ "${CONFIG["enable_gemini"]}" = true ]; then
+        echo "GEMINI_API_KEY=${CONFIG["gemini_api_key"]}" >> "$output_file"
+    fi
+    
+    # Add Custom API configuration
+    if [ "${CONFIG["enable_custom_api"]}" = true ]; then
+        echo "CUSTOM_API_URL=${CONFIG["custom_api_url"]}" >> "$output_file"
+    fi
+    
+    # Add feature configuration
+    cat >> "$output_file" << EOL
+
+# Feature Configuration
+EOL
+    
+    # Add Web Search configuration
+    if [ "${CONFIG["enable_web_search"]}" = true ]; then
+        echo "ENABLE_RAG_WEB_SEARCH=true" >> "$output_file"
+        echo "RAG_WEB_SEARCH_ENGINE=${CONFIG["web_search_engine"]}" >> "$output_file"
+        echo "RAG_WEB_SEARCH_RESULT_COUNT=${CONFIG["search_result_count"]}" >> "$output_file"
+        
+        # Add engine-specific settings
+        case "${CONFIG["web_search_engine"]}" in
+            google)
+                if [ -n "${CONFIG["google_pse_api_key"]}" ]; then
+                    echo "GOOGLE_PSE_API_KEY=${CONFIG["google_pse_api_key"]}" >> "$output_file"
+                fi
+                if [ -n "${CONFIG["google_pse_engine_id"]}" ]; then
+                    echo "GOOGLE_PSE_ENGINE_ID=${CONFIG["google_pse_engine_id"]}" >> "$output_file"
+                fi
+                ;;
+            bing)
+                if [ -n "${CONFIG["bing_search_api_key"]}" ]; then
+                    echo "BING_SEARCH_V7_SUBSCRIPTION_KEY=${CONFIG["bing_search_api_key"]}" >> "$output_file"
+                fi
+                ;;
+            searxng)
+                if [ -n "${CONFIG["searxng_query_url"]}" ]; then
+                    echo "SEARXNG_QUERY_URL=${CONFIG["searxng_query_url"]}" >> "$output_file"
+                fi
+                ;;
+            brave)
+                if [ -n "${CONFIG["brave_search_api_key"]}" ]; then
+                    echo "BRAVE_SEARCH_API_KEY=${CONFIG["brave_search_api_key"]}" >> "$output_file"
+                fi
+                ;;
+            tavily)
+                if [ -n "${CONFIG["tavily_api_key"]}" ]; then
+                    echo "TAVILY_API_KEY=${CONFIG["tavily_api_key"]}" >> "$output_file"
+                fi
+                ;;
+        esac
+    fi
+    
+    # Add Speech-to-Text configuration
+    if [ "${CONFIG["enable_speech_to_text"]}" = true ]; then
+        cat >> "$output_file" << EOL
+
+# Speech-to-Text Configuration
+EOL
+        if [ "${CONFIG["stt_engine"]}" = "local_whisper" ]; then
+            echo "WHISPER_MODEL=${CONFIG["whisper_model"]}" >> "$output_file"
+        elif [ "${CONFIG["stt_engine"]}" = "openai" ]; then
+            echo "AUDIO_STT_ENGINE=openai" >> "$output_file"
+            echo "AUDIO_STT_MODEL=whisper-1" >> "$output_file"
+        fi
+    fi
+    
+    # Add Text-to-Speech configuration
+    if [ "${CONFIG["enable_text_to_speech"]}" = true ]; then
+        cat >> "$output_file" << EOL
+
+# Text-to-Speech Configuration
+EOL
+        echo "AUDIO_TTS_ENGINE=${CONFIG["tts_engine"]}" >> "$output_file"
+        
+        if [ "${CONFIG["tts_engine"]}" = "openai" ]; then
+            echo "AUDIO_TTS_MODEL=${CONFIG["tts_model"]}" >> "$output_file"
+            echo "AUDIO_TTS_VOICE=${CONFIG["tts_voice"]}" >> "$output_file"
+        fi
+    fi
+    
+    # Add Pipeline configuration
+    if [ "${CONFIG["enable_pipelines"]}" = true ]; then
+        cat >> "$output_file" << EOL
+
+# Pipeline Configuration
+ENABLE_WEBSOCKET_SUPPORT=true
+WEBSOCKET_MANAGER=redis
+WEBSOCKET_REDIS_URL=redis://redis:6379/0
+EOL
+    fi
+    
+    # Add Image Generation configuration
+    if [ "${CONFIG["enable_image_generation"]}" = true ]; then
+        cat >> "$output_file" << EOL
+
+# Image Generation Configuration
+ENABLE_IMAGE_GENERATION=true
+IMAGE_GENERATION_ENGINE=${CONFIG["image_generation_engine"]}
+IMAGE_SIZE=${CONFIG["image_size"]}
+EOL
+        
+        # Add engine-specific settings
+        case "${CONFIG["image_generation_engine"]}" in
+            automatic1111)
+                echo "AUTOMATIC1111_BASE_URL=http://automatic1111:7860" >> "$output_file"
+                ;;
+            comfyui)
+                echo "COMFYUI_BASE_URL=http://comfyui:8188" >> "$output_file"
+                ;;
+        esac
+    fi
+    
+    # Add RAG configuration
+    if [ "${CONFIG["enable_rag"]}" = true ]; then
+        cat >> "$output_file" << EOL
+
+# RAG Configuration
+VECTOR_DB=chroma
+EOL
+    fi
+    
+    # Add Channel configuration
+    if [ "${CONFIG["enable_channels"]}" = true ]; then
+        cat >> "$output_file" << EOL
+
+# Channel Configuration
+ENABLE_CHANNELS=true
+EOL
+    fi
+    
+    # Add security configuration
+    cat >> "$output_file" << EOL
+
+# Security Configuration
+ENABLE_API_KEY=${CONFIG["enable_api_key"]}
+ENABLE_API_KEY_ENDPOINT_RESTRICTIONS=${CONFIG["enable_api_key_restrictions"]}
+CORS_ALLOW_ORIGIN=${CONFIG["cors_allow_origin"]}
+
+# Telemetry Settings (Disabled)
+SCARF_NO_ANALYTICS=true
+DO_NOT_TRACK=true
+ANONYMIZED_TELEMETRY=false
+EOL
+    
+    log "SUCCESS" "Environment file generated successfully."
+}
+
+#######################################
+# Deployment Functions
+#######################################
+
+# Deploy Open WebUI
+deploy_open_webui() {
+    log "INFO" "Starting Open WebUI deployment..."
+    
+    # Generate Docker Compose file
+    generate_docker_compose "$DOCKER_COMPOSE_FILE"
+    
+    # Generate environment file
+    generate_env_file "$ENV_FILE"
+    
+    # Pull Docker images
+    log "INFO" "Pulling Docker images (this may take a few minutes)..."
+    docker compose -f "$DOCKER_COMPOSE_FILE" pull
+    
+    if [ $? -ne 0 ]; then
+        log "ERROR" "Failed to pull Docker images."
+        if confirm "Would you like to try again?"; then
+            docker compose -f "$DOCKER_COMPOSE_FILE" pull
+        else
+            error_exit "Deployment failed."
+        fi
+    fi
+    
+    # Start containers
+    log "INFO" "Starting Docker containers..."
+    docker compose -f "$DOCKER_COMPOSE_FILE" up -d
+    
+    if [ $? -ne 0 ]; then
+        log "ERROR" "Failed to start Docker containers."
+        
+        # Check for common issues
+        check_deployment_issues
+        
+        if confirm "Would you like to try again?"; then
+            docker compose -f "$DOCKER_COMPOSE_FILE" up -d
+        else
+            error_exit "Deployment failed."
+        fi
+    fi
+    
+    # Verify deployment
+    verify_deployment
+    
+    # Display success message
+    display_success_message
+}
+
+# Check for common deployment issues
+check_deployment_issues() {
+    log "INFO" "Checking for common deployment issues..."
+    
+    # Check if ports are already in use
+    if netstat -tuln 2>/dev/null | grep -q ":${CONFIG["webui_port"]}"; then
+        log "WARNING" "Port ${CONFIG["webui_port"]} is already in use. Please choose a different port."
+    fi
+    
+    if [ "${CONFIG["enable_pipelines"]}" = true ] && netstat -tuln 2>/dev/null | grep -q ":${CONFIG["pipelines_port"]}"; then
+        log "WARNING" "Port ${CONFIG["pipelines_port"]} is already in use. Please choose a different port."
+    fi
+    
+    # Check Docker daemon
+    if ! docker info &>/dev/null; then
+        log "WARNING" "Docker daemon is not running. Please start Docker."
+    fi
+    
+    # Check disk space
+    AVAILABLE_SPACE=$(df -k . | awk 'NR==2 {print $4}')
+    if [ "$AVAILABLE_SPACE" -lt 1000000 ]; then  # Less than 1GB
+        log "WARNING" "Low disk space. Deployment may fail."
+    fi
+}
+
+# Verify deployment
+verify_deployment() {
+    log "INFO" "Verifying deployment..."
+    
+    # Give containers some time to start
+    sleep 5
+    
+    # Check if containers are running
+    local containers=("open-webui")
+    
+    if [ "${CONFIG["enable_ollama"]}" = true ]; then
+        containers+=("ollama")
+    fi
+    
+    if [ "${CONFIG["enable_pipelines"]}" = true ]; then
+        containers+=("pipelines" "redis")
+    fi
+    
+    local all_running=true
+    
+    for container in "${containers[@]}"; do
+        if ! docker ps --format '{{.Names}}' | grep -q "^$container$"; then
+            log "ERROR" "Container $container is not running."
+            all_running=false
+        fi
+    done
+    
+    if [ "$all_running" = true ]; then
+        # Check if web UI is responding
+        local max_attempts=6
+        local attempts=0
+        local success=false
+        
+        log "INFO" "Waiting for Open WebUI to become available..."
+        
+        while [ $attempts -lt $max_attempts ] && [ "$success" = false ]; do
+            attempts=$((attempts + 1))
+            
+            # Try to access the health endpoint
+            if curl -s "http://localhost:${CONFIG["webui_port"]}/health" | grep -q "status.*true"; then
+                success=true
+            else
+                log "INFO" "Waiting for Open WebUI to start (attempt $attempts/$max_attempts)..."
+                sleep 5
+            fi
+        done
+        
+        if [ "$success" = true ]; then
+            log "SUCCESS" "Open WebUI is up and running."
+        else
+            log "WARNING" "Could not verify that Open WebUI is running properly. It might still be starting up."
+        fi
+    else
+        log "WARNING" "Not all containers are running. Deployment may have issues."
+        docker ps
+    fi
+}
+
+# Display success message
+display_success_message() {
+    local server_ip
+    
+    # Get the server's public IP if possible, otherwise use localhost
+    if command_exists curl; then
+        server_ip=$(curl -s https://api.ipify.org 2>/dev/null)
+    fi
+    
+    if [ -z "$server_ip" ]; then
+        server_ip="localhost"
+    fi
+    
+    local web_url="http://$server_ip:${CONFIG["webui_port"]}"
+    
+    cat << EOL
+
+${GREEN}┌─────────────────────────────────────────────────────┐${NC}
+${GREEN}│                                                     │${NC}
+${GREEN}│             Open WebUI Deployed Successfully!       │${NC}
+${GREEN}│                                                     │${NC}
+${GREEN}└─────────────────────────────────────────────────────┘${NC}
+
+Access Open WebUI at: ${BLUE}$web_url${NC}
+
+${YELLOW}Important Notes:${NC}
+• The first account you create will be the administrator account.
+• If you enabled Ollama, it may take a few minutes to become ready.
+• To check logs: ${BLUE}docker compose -f $DOCKER_COMPOSE_FILE logs -f${NC}
+• To stop: ${BLUE}docker compose -f $DOCKER_COMPOSE_FILE down${NC}
+• To restart: ${BLUE}docker compose -f $DOCKER_COMPOSE_FILE restart${NC}
+
+Your configuration has been saved to: ${BLUE}$CONFIG_FILE${NC}
+Docker Compose file: ${BLUE}$DOCKER_COMPOSE_FILE${NC}
+Environment file: ${BLUE}$ENV_FILE${NC}
+
+EOL
+}
+
+#######################################
+# Stop and Clean Functions
+#######################################
+
+# Stop Open WebUI
+stop_open_webui() {
+    log "INFO" "Stopping Open WebUI..."
+    
+    if [ -f "$DOCKER_COMPOSE_FILE" ]; then
+        docker compose -f "$DOCKER_COMPOSE_FILE" down
+        log "SUCCESS" "Open WebUI has been stopped."
+    else
+        log "ERROR" "Docker Compose file not found: $DOCKER_COMPOSE_FILE"
+    fi
+}
+
+# Clean Open WebUI installation
+clean_open_webui() {
+    log "INFO" "Cleaning Open WebUI installation..."
+    
+    if [ -f "$DOCKER_COMPOSE_FILE" ]; then
+        # Stop containers
+        docker compose -f "$DOCKER_COMPOSE_FILE" down
+        
+        if confirm "Remove Docker volumes? This will delete all data, including models, conversations, and settings."; then
+            docker compose -f "$DOCKER_COMPOSE_FILE" down -v
+            log "INFO" "Docker volumes removed."
+        fi
+        
+        # Remove files
+        if confirm "Remove configuration files?"; then
+            rm -f "$DOCKER_COMPOSE_FILE" "$ENV_FILE" "$CONFIG_FILE"
+            log "INFO" "Configuration files removed."
+        fi
+        
+        log "SUCCESS" "Open WebUI has been cleaned up."
+    else
+        log "ERROR" "Docker Compose file not found: $DOCKER_COMPOSE_FILE"
+    fi
+}
+
+#######################################
+# Main Script Functions
+#######################################
+
+# Parse command-line arguments
+parse_arguments() {
+    while [[ $# -gt 0 ]]; do
+        key="$1"
+        
+        case $key in
+            --non-interactive)
+                NON_INTERACTIVE=true
+                ;;
+            --config)
+                if [[ -n "$2" && ! "$2" =~ ^-- ]]; then
+                    CONFIG_FILE="$2"
+                    shift
+                else
+                    error_exit "Missing argument for $key"
+                fi
+                ;;
+            --port)
+                if [[ -n "$2" && ! "$2" =~ ^-- ]]; then
+                    CONFIG["webui_port"]="$2"
+                    shift
+                else
+                    error_exit "Missing argument for $key"
+                fi
+                ;;
+            --ollama-url)
+                if [[ -n "$2" && ! "$2" =~ ^-- ]]; then
+                    CONFIG["ollama_url"]="$2"
+                    shift
+                else
+                    error_exit "Missing argument for $key"
+                fi
+                ;;
+            --no-ollama)
+                CONFIG["enable_ollama"]=false
+                ;;
+            --help)
+                SHOW_HELP=true
+                ;;
+            *)
+                echo "Unknown option: $key"
+                SHOW_HELP=true
+                ;;
         esac
         shift
     done
 }
 
-# Check if a command exists
-command_exists() {
-    command -v "$1" >/dev/null 2>&1
-}
-
-# Install a package based on the detected OS
-install_package() {
-    local package=$1
-    
-    if command_exists apt-get; then
-        log "INFO" "Installing $package using apt-get..."
-        sudo apt-get update
-        sudo apt-get install -y "$package"
-    elif command_exists yum; then
-        log "INFO" "Installing $package using yum..."
-        sudo yum install -y "$package"
-    elif command_exists dnf; then
-        log "INFO" "Installing $package using dnf..."
-        sudo dnf install -y "$package"
-    elif command_exists apk; then
-        log "INFO" "Installing $package using apk..."
-        sudo apk add --no-cache "$package"
-    elif command_exists pacman; then
-        log "INFO" "Installing $package using pacman..."
-        sudo pacman -S --noconfirm "$package"
-    else
-        log "ERROR" "Could not determine package manager. Please install $package manually."
-        return 1
-    fi
-    
-    return $?
-}
-
-# Check for prerequisites and install if missing
-check_prerequisites() {
-    local missing_prereqs=()
-    
-    log "INFO" "Checking prerequisites..."
-    
-    # Check for dialog
-    if ! command_exists dialog; then
-        log "WARNING" "Dialog is not installed. Required for TUI."
-        missing_prereqs+=("dialog")
-    fi
-    
-    # Check for git
-    if ! command_exists git; then
-        log "WARNING" "Git is not installed. Required for cloning repository."
-        missing_prereqs+=("git")
-    fi
-    
-    # Check for docker
-    if ! command_exists docker; then
-        log "WARNING" "Docker is not installed. Required for containerization."
-        missing_prereqs+=("docker")
-    fi
-    
-    # Check for docker compose
-    if ! command_exists docker-compose && ! command_exists "docker" compose; then
-        log "WARNING" "Docker Compose is not installed. Required for service orchestration."
-        missing_prereqs+=("docker-compose")
-    fi
-    
-    # Check for curl
-    if ! command_exists curl; then
-        log "WARNING" "Curl is not installed. Required for API requests."
-        missing_prereqs+=("curl")
-    fi
-    
-    # Install missing prerequisites
-    if [[ ${#missing_prereqs[@]} -gt 0 ]]; then
-        log "INFO" "Installing missing prerequisites: ${missing_prereqs[*]}"
-        
-        for package in "${missing_prereqs[@]}"; do
-            if [[ "$package" == "docker" ]]; then
-                # Docker requires special installation
-                log "INFO" "Docker requires special installation. Please refer to the Docker documentation."
-                log "INFO" "You can try running: curl -fsSL https://get.docker.com -o get-docker.sh && sudo sh get-docker.sh"
-                read -p "Would you like to automatically install Docker? (y/n): " install_docker
-                if [[ "$install_docker" == "y" || "$install_docker" == "Y" ]]; then
-                    curl -fsSL https://get.docker.com -o get-docker.sh && sudo sh get-docker.sh
-                    sudo usermod -aG docker $USER
-                    log "INFO" "Docker installed. You may need to log out and back in for group changes to take effect."
-                else
-                    log "ERROR" "Docker is required. Please install it manually."
-                    exit 1
-                fi
-            elif [[ "$package" == "docker-compose" ]]; then
-                # Check if Docker Compose plugin is available
-                if command_exists docker && docker compose version >/dev/null 2>&1; then
-                    log "INFO" "Docker Compose plugin is available."
-                else
-                    log "INFO" "Installing Docker Compose..."
-                    sudo curl -L "https://github.com/docker/compose/releases/download/v2.20.3/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-                    sudo chmod +x /usr/local/bin/docker-compose
-                fi
-            else
-                install_package "$package" || {
-                    log "ERROR" "Failed to install $package. Please install it manually."
-                    exit 1
-                }
-            fi
-        done
-    else
-        log "INFO" "All prerequisites are installed."
-    fi
-}
-
-# Clone the OpenWebUI repository
-clone_repository() {
-    if [[ -d "$REPO_DIR" ]]; then
-        log "INFO" "Repository directory already exists. Checking if it's a git repository..."
-        
-        if [[ -d "$REPO_DIR/.git" ]]; then
-            log "INFO" "Updating existing repository..."
-            (cd "$REPO_DIR" && git pull)
-        else
-            log "WARNING" "Directory exists but is not a git repository. Backing up and cloning fresh..."
-            mv "$REPO_DIR" "${REPO_DIR}_backup_$(date +%s)"
-            git clone "$REPO_URL" "$REPO_DIR"
-        fi
-    else
-        log "INFO" "Cloning OpenWebUI repository..."
-        git clone "$REPO_URL" "$REPO_DIR"
-    fi
-    
-    # Check if clone was successful
-    if [[ $? -ne 0 || ! -d "$REPO_DIR" ]]; then
-        log "ERROR" "Failed to clone repository."
-        exit 1
-    fi
-    
-    log "INFO" "Repository cloned/updated successfully."
-}
-
-# Configuration using dialog TUI
-configure_openwebui() {
-    # Check if dialog is available
-    if ! command_exists dialog; then
-        log "ERROR" "Dialog is required for configuration. Please install it and try again."
-        exit 1
-    fi
-    
-    # Initialize configuration variables with defaults
-    local open_ai_api_enabled="off"
-    local claude_api_enabled="off"
-    local openrouter_api_enabled="off"
-    local open_ai_api_key=""
-    local claude_api_key=""
-    local openrouter_api_key=""
-    local web_search_enabled="off"
-    local rag_enabled="off"
-    local speech_to_text_enabled="off"
-    local authentication_enabled="on"
-    local all_models_access="off"
-    local server_port="3000"
-    local enable_websocket="off"
-    local enable_channels="off"
-    local enable_functions="off"
-    local enable_image_generation="off"
-    
-    # Welcome screen
-    dialog --backtitle "OpenWebUI Deployment" \
-           --title "Welcome" \
-           --msgbox "Welcome to the OpenWebUI Deployment Script!\n\nThis wizard will guide you through the configuration of your OpenWebUI instance.\n\nUse TAB or arrow keys to navigate, SPACE to select options, and ENTER to confirm." \
-           15 60
-    
-    # Main configuration screen with checklist for features
-    features=$(dialog --backtitle "OpenWebUI Deployment" \
-                      --title "Feature Selection" \
-                      --checklist "Select the features you want to enable:" \
-                      20 70 12 \
-                      "web_search" "Enable Web Search" "$web_search_enabled" \
-                      "rag" "Enable RAG (Retrieval Augmented Generation)" "$rag_enabled" \
-                      "speech_to_text" "Enable Speech-to-Text" "$speech_to_text_enabled" \
-                      "authentication" "Enable Authentication" "$authentication_enabled" \
-                      "all_models_access" "Allow All Users to Access All Models" "$all_models_access" \
-                      "websocket" "Enable WebSocket Support" "$enable_websocket" \
-                      "channels" "Enable Channels Feature" "$enable_channels" \
-                      "functions" "Enable Functions Support" "$enable_functions" \
-                      "image_generation" "Enable Image Generation" "$enable_image_generation" \
-                      2>&1 >/dev/tty)
-    
-    # Check for cancel
-    if [[ $? -ne 0 ]]; then
-        log "INFO" "Configuration cancelled by user."
-        exit 0
-    fi
-    
-    # Update feature flags based on selection
-    web_search_enabled=$(echo "$features" | grep -q "web_search" && echo "on" || echo "off")
-    rag_enabled=$(echo "$features" | grep -q "rag" && echo "on" || echo "off")
-    speech_to_text_enabled=$(echo "$features" | grep -q "speech_to_text" && echo "on" || echo "off")
-    authentication_enabled=$(echo "$features" | grep -q "authentication" && echo "on" || echo "off")
-    all_models_access=$(echo "$features" | grep -q "all_models_access" && echo "on" || echo "off")
-    enable_websocket=$(echo "$features" | grep -q "websocket" && echo "on" || echo "off")
-    enable_channels=$(echo "$features" | grep -q "channels" && echo "on" || echo "off")
-    enable_functions=$(echo "$features" | grep -q "functions" && echo "on" || echo "off")
-    enable_image_generation=$(echo "$features" | grep -q "image_generation" && echo "on" || echo "off")
-    
-    # API Selection
-    apis=$(dialog --backtitle "OpenWebUI Deployment" \
-                   --title "API Selection" \
-                   --checklist "Select the APIs you want to enable:" \
-                   15 60 3 \
-                   "openai" "OpenAI API" "$open_ai_api_enabled" \
-                   "claude" "Claude API" "$claude_api_enabled" \
-                   "openrouter" "OpenRouter API" "$openrouter_api_enabled" \
-                   2>&1 >/dev/tty)
-    
-    # Check for cancel
-    if [[ $? -ne 0 ]]; then
-        log "INFO" "Configuration cancelled by user."
-        exit 0
-    fi
-    
-    # Update API flags based on selection
-    open_ai_api_enabled=$(echo "$apis" | grep -q "openai" && echo "on" || echo "off")
-    claude_api_enabled=$(echo "$apis" | grep -q "claude" && echo "on" || echo "off")
-    openrouter_api_enabled=$(echo "$apis" | grep -q "openrouter" && echo "on" || echo "off")
-    
-    # Collect API keys if enabled
-    if [[ "$open_ai_api_enabled" == "on" ]]; then
-        open_ai_api_key=$(dialog --backtitle "OpenWebUI Deployment" \
-                                 --title "OpenAI API Key" \
-                                 --inputbox "Enter your OpenAI API Key:" \
-                                 8 60 \
-                                 2>&1 >/dev/tty)
-        
-        # Check for cancel
-        if [[ $? -ne 0 ]]; then
-            log "INFO" "Configuration cancelled by user."
-            exit 0
-        fi
-    fi
-    
-    if [[ "$claude_api_enabled" == "on" ]]; then
-        claude_api_key=$(dialog --backtitle "OpenWebUI Deployment" \
-                                --title "Claude API Key" \
-                                --inputbox "Enter your Claude API Key:" \
-                                8 60 \
-                                2>&1 >/dev/tty)
-        
-        # Check for cancel
-        if [[ $? -ne 0 ]]; then
-            log "INFO" "Configuration cancelled by user."
-            exit 0
-        fi
-    fi
-    
-    if [[ "$openrouter_api_enabled" == "on" ]]; then
-        openrouter_api_key=$(dialog --backtitle "OpenWebUI Deployment" \
-                                    --title "OpenRouter API Key" \
-                                    --inputbox "Enter your OpenRouter API Key:" \
-                                    8 60 \
-                                    2>&1 >/dev/tty)
-        
-        # Check for cancel
-        if [[ $? -ne 0 ]]; then
-            log "INFO" "Configuration cancelled by user."
-            exit 0
-        fi
-    fi
-    
-    # Server configuration
-    server_port=$(dialog --backtitle "OpenWebUI Deployment" \
-                         --title "Server Configuration" \
-                         --inputbox "Enter the port to run OpenWebUI on:" \
-                         8 60 \
-                         "$server_port" \
-                         2>&1 >/dev/tty)
-    
-    # Check for cancel
-    if [[ $? -ne 0 ]]; then
-        log "INFO" "Configuration cancelled by user."
-        exit 0
-    fi
-    
-    # Confirm configuration
-    dialog --backtitle "OpenWebUI Deployment" \
-           --title "Confirm Configuration" \
-           --yesno "Please confirm your configuration:\n\n\
-Features:\n\
-- Web Search: $web_search_enabled\n\
-- RAG: $rag_enabled\n\
-- Speech-to-Text: $speech_to_text_enabled\n\
-- Authentication: $authentication_enabled\n\
-- All Models Access: $all_models_access\n\
-- WebSocket Support: $enable_websocket\n\
-- Channels Feature: $enable_channels\n\
-- Functions Support: $enable_functions\n\
-- Image Generation: $enable_image_generation\n\n\
-APIs:\n\
-- OpenAI API: $open_ai_api_enabled\n\
-- Claude API: $claude_api_enabled\n\
-- OpenRouter API: $openrouter_api_enabled\n\n\
-Server:\n\
-- Port: $server_port\n\n\
-Proceed with this configuration?" \
-           20 70
-    
-    # Check for cancel or no
-    if [[ $? -ne 0 ]]; then
-        log "INFO" "Configuration cancelled by user."
-        exit 0
-    fi
-    
-    # Create configuration files
-    cd "$REPO_DIR" || {
-        log "ERROR" "Failed to navigate to repository directory."
-        exit 1
-    }
-    
-    # Create .env file
-    log "INFO" "Creating .env file..."
-    cat > "$ENV_FILE" << EOF
-# OpenWebUI Configuration
-# Generated by OpenWebUI Deployment Script
-
-# Server configuration
-OPEN_WEBUI_PORT=$server_port
-
-# API configuration
-EOF
-    
-    if [[ "$open_ai_api_enabled" == "on" ]]; then
-        cat >> "$ENV_FILE" << EOF
-OPENAI_API_KEY=$open_ai_api_key
-OPENAI_API_BASE_URL=https://api.openai.com/v1
-EOF
-    fi
-    
-    if [[ "$claude_api_enabled" == "on" ]]; then
-        cat >> "$ENV_FILE" << EOF
-# Claude API configuration - To be configured in the Admin Panel
-# CLAUDE_API_KEY=$claude_api_key
-EOF
-    fi
-    
-    if [[ "$openrouter_api_enabled" == "on" ]]; then
-        cat >> "$ENV_FILE" << EOF
-# OpenRouter API configuration - To be configured in the Admin Panel
-# OPENROUTER_API_KEY=$openrouter_api_key
-EOF
-    fi
-    
-    # Feature configuration
-    cat >> "$ENV_FILE" << EOF
-
-# Feature configuration
-ENABLE_RAG_WEB_SEARCH=$([ "$web_search_enabled" == "on" ] && echo "True" || echo "False")
-RAG_EMBEDDING_ENGINE=$([ "$rag_enabled" == "on" ] && echo "ollama" || echo "")
-WEBUI_AUTH=$([ "$authentication_enabled" == "on" ] && echo "True" || echo "False")
-BYPASS_MODEL_ACCESS_CONTROL=$([ "$all_models_access" == "on" ] && echo "True" || echo "False")
-ENABLE_WEBSOCKET_SUPPORT=$([ "$enable_websocket" == "on" ] && echo "True" || echo "False")
-ENABLE_CHANNELS=$([ "$enable_channels" == "on" ] && echo "True" || echo "False")
-ENABLE_IMAGE_GENERATION=$([ "$enable_image_generation" == "on" ] && echo "True" || echo "False")
-
-# Generate a random secret key for security
-WEBUI_SECRET_KEY=$(openssl rand -hex 32)
-
-# Privacy settings
-SCARF_NO_ANALYTICS=true
-DO_NOT_TRACK=true
-ANONYMIZED_TELEMETRY=false
-EOF
-    
-    # Create or update docker-compose.yml
-    log "INFO" "Creating docker-compose.yml file..."
-    
-    # Handle the Redis service template separately
-    redis_service=""
-    if [ "$enable_websocket" == "on" ]; then
-        redis_service=$(cat << 'REDIS_SERVICE'
-  redis:
-    image: redis:alpine
-    container_name: redis
-    restart: unless-stopped
-    volumes:
-      - redis-data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-REDIS_SERVICE
-)
-    fi
-    
-    # Handle volume configuration
-    redis_volume=""
-    if [ "$enable_websocket" == "on" ]; then
-        redis_volume="  redis-data: {}"
-    fi
-    
-    # Create the docker-compose.yml file
-    cat > "$DOCKER_COMPOSE_FILE" << EOF
-services:
-  ollama:
-    volumes:
-      - ollama:/root/.ollama
-    container_name: ollama
-    pull_policy: always
-    tty: true
-    restart: unless-stopped
-    image: ollama/ollama:latest
-
-  open-webui:
-    image: ghcr.io/open-webui/open-webui:main
-    container_name: open-webui
-    volumes:
-      - open-webui:/app/backend/data
-    depends_on:
-      - ollama
-    ports:
-      - \${OPEN_WEBUI_PORT-3000}:8080
-    environment:
-      - 'OLLAMA_BASE_URL=http://ollama:11434'
-$([ "$open_ai_api_enabled" == "on" ] && echo "      - 'OPENAI_API_KEY=\${OPENAI_API_KEY}'")
-$([ "$open_ai_api_enabled" == "on" ] && echo "      - 'OPENAI_API_BASE_URL=\${OPENAI_API_BASE_URL}'")
-$([ "$web_search_enabled" == "on" ] && echo "      - 'ENABLE_RAG_WEB_SEARCH=\${ENABLE_RAG_WEB_SEARCH}'")
-$([ "$rag_enabled" == "on" ] && echo "      - 'RAG_EMBEDDING_ENGINE=\${RAG_EMBEDDING_ENGINE}'")
-$([ "$authentication_enabled" == "off" ] && echo "      - 'WEBUI_AUTH=\${WEBUI_AUTH}'")
-$([ "$all_models_access" == "on" ] && echo "      - 'BYPASS_MODEL_ACCESS_CONTROL=\${BYPASS_MODEL_ACCESS_CONTROL}'")
-$([ "$enable_websocket" == "on" ] && echo "      - 'ENABLE_WEBSOCKET_SUPPORT=\${ENABLE_WEBSOCKET_SUPPORT}'")
-$([ "$enable_channels" == "on" ] && echo "      - 'ENABLE_CHANNELS=\${ENABLE_CHANNELS}'")
-$([ "$enable_image_generation" == "on" ] && echo "      - 'ENABLE_IMAGE_GENERATION=\${ENABLE_IMAGE_GENERATION}'")
-      - 'WEBUI_SECRET_KEY=\${WEBUI_SECRET_KEY}'
-      - 'SCARF_NO_ANALYTICS=\${SCARF_NO_ANALYTICS}'
-      - 'DO_NOT_TRACK=\${DO_NOT_TRACK}'
-      - 'ANONYMIZED_TELEMETRY=\${ANONYMIZED_TELEMETRY}'
-    extra_hosts:
-      - host.docker.internal:host-gateway
-    restart: unless-stopped
-$redis_service
-
-volumes:
-  ollama: {}
-  open-webui: {}
-$redis_volume
-EOF
-    
-    log "INFO" "Configuration files created successfully."
-    
-    # Show completion message
-    dialog --backtitle "OpenWebUI Deployment" \
-           --title "Configuration Complete" \
-           --msgbox "Configuration completed successfully!\n\nYou can now start OpenWebUI using Docker Compose.\n\nCommand: docker-compose up -d\n\nOpenWebUI will be available at: http://localhost:$server_port" \
-           12 60
-}
-
-# Start OpenWebUI using docker-compose
-start_openwebui() {
-    cd "$REPO_DIR" || {
-        log "ERROR" "Failed to navigate to repository directory."
-        exit 1
-    }
-    
-    log "INFO" "Starting OpenWebUI services..."
-    
-    # Check if we should use docker compose or docker-compose
-    if command_exists "docker" && docker compose version >/dev/null 2>&1; then
-        docker compose up -d
-    elif command_exists docker-compose; then
-        docker-compose up -d
-    else
-        log "ERROR" "Docker Compose not found. Please install it and try again."
-        exit 1
-    fi
-    
-    if [[ $? -ne 0 ]]; then
-        log "ERROR" "Failed to start OpenWebUI services."
-        exit 1
-    fi
-    
-    log "INFO" "OpenWebUI services started successfully."
-    
-    # Get server port from .env file
-    local port
-    if [[ -f "$ENV_FILE" ]]; then
-        port=$(grep OPEN_WEBUI_PORT "$ENV_FILE" | cut -d= -f2)
-    else
-        port="3000"
-    fi
-    
-    log "INFO" "OpenWebUI is now available at: http://localhost:$port"
-    log "INFO" "Initial login will create an admin account."
-    
-    # Attempt to get the server's public IP
-    public_ip=$(curl -s ifconfig.me)
-    if [[ -n "$public_ip" ]]; then
-        log "INFO" "If this is a cloud server, you can also access OpenWebUI at: http://$public_ip:$port"
-    fi
-}
-
 # Main function
 main() {
-    # Parse command line arguments
-    parse_args "$@"
+    # Display banner
+    cat << "EOF"
+ _____                    _    _      _     _   _ ___ 
+|  _  |___ ___ ___ ___   | |  | | ___| |_  | | | |_ _|
+|     |  _| -_|   | . |  | |  | |/ -_)  _| | |_| || | 
+|__|__|_| |___|_|_|___|  |_|__|_|\___|\__|  \___/|___|
+                                                       
+EOF
     
-    log "INFO" "Starting OpenWebUI deployment script v$VERSION"
+    echo "Open WebUI Deployment Script v${SCRIPT_VERSION}"
+    echo "---------------------------------------------"
     
-    # Check and install prerequisites
-    check_prerequisites
+    # Parse command-line arguments
+    parse_arguments "$@"
     
-    # Clone repository
-    clone_repository
-    
-    # Configure OpenWebUI
-    configure_openwebui
-    
-    # Start OpenWebUI if not config-only mode
-    if [[ "$CONFIG_ONLY" != "true" ]]; then
-        # Ask user if they want to start OpenWebUI now
-        dialog --backtitle "OpenWebUI Deployment" \
-               --title "Start OpenWebUI" \
-               --yesno "Would you like to start OpenWebUI now?" \
-               7 60
-        
-        if [[ $? -eq 0 ]]; then
-            start_openwebui
-        else
-            log "INFO" "OpenWebUI not started. You can start it manually later with: cd $REPO_DIR && docker-compose up -d"
-        fi
-    else
-        log "INFO" "Config-only mode. OpenWebUI not started."
-        log "INFO" "You can start OpenWebUI manually with: cd $REPO_DIR && docker-compose up -d"
+    # Show help and exit if requested
+    if [ "$SHOW_HELP" = true ]; then
+        show_help
+        exit 0
     fi
     
-    log "INFO" "OpenWebUI deployment script completed successfully."
+    # Initialize configuration with defaults
+    init_config
+    
+    # Load configuration from file if it exists
+    if [ -f "$CONFIG_FILE" ]; then
+        load_config "$CONFIG_FILE"
+    fi
+    
+    # Check system requirements
+    check_system_requirements
+    
+    # Interactive configuration if not in non-interactive mode
+    if [ "$NON_INTERACTIVE" = false ]; then
+        configure_interactively
+    fi
+    
+    # Confirm deployment
+    if [ "$NON_INTERACTIVE" = false ]; then
+        if ! confirm "Ready to deploy Open WebUI with the current configuration. Continue?"; then
+            log "INFO" "Deployment cancelled."
+            exit 0
+        fi
+    fi
+    
+    # Deploy Open WebUI
+    deploy_open_webui
+    
+    return 0
 }
 
-# Execute main function with all arguments
+# Start script
 main "$@"
