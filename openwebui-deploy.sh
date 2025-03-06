@@ -446,14 +446,36 @@ init_config() {
     # API settings
     CONFIG["enable_ollama"]="true"
     CONFIG["ollama_url"]="http://ollama:11434"
+    
+    # OpenAI API
     CONFIG["enable_openai"]="false"
     CONFIG["openai_api_key"]=""
+    CONFIG["openai_base_url"]="https://api.openai.com/v1"
+    
+    # Claude API
     CONFIG["enable_claude"]="false"
     CONFIG["claude_api_key"]=""
+    
+    # OpenRouter API
     CONFIG["enable_openrouter"]="false"
     CONFIG["openrouter_api_key"]=""
+    CONFIG["openrouter_base_url"]="https://openrouter.ai/api/v1"
+    
+    # Google Gemini API
     CONFIG["enable_gemini"]="false"
     CONFIG["gemini_api_key"]=""
+    
+    # Azure OpenAI API
+    CONFIG["enable_azure_openai"]="false"
+    CONFIG["azure_openai_api_key"]=""
+    CONFIG["azure_openai_endpoint"]=""
+    CONFIG["azure_deployment_name"]=""
+    
+    # Groq API
+    CONFIG["enable_groq"]="false"
+    CONFIG["groq_api_key"]=""
+    
+    # Custom API Endpoint
     CONFIG["enable_custom_api"]="false"
     CONFIG["custom_api_url"]=""
     
@@ -473,6 +495,11 @@ init_config() {
     
     CONFIG["enable_pipelines"]="true"
     CONFIG["pipelines_port"]="9099"
+    CONFIG["install_function_calling"]="true"
+    CONFIG["install_rate_limiting"]="true"
+    CONFIG["install_toxic_filter"]="true"
+    CONFIG["install_libretranslate"]="false"
+    CONFIG["install_langfuse"]="false"
     
     CONFIG["enable_image_generation"]="false"
     CONFIG["image_generation_engine"]="openai"
@@ -490,6 +517,9 @@ init_config() {
     CONFIG["enable_api_key"]="true"
     CONFIG["enable_api_key_restrictions"]="false"
     CONFIG["cors_allow_origin"]="*"
+    
+    # Telemetry settings
+    CONFIG["disable_telemetry"]="true"
     
     log "SUCCESS" "Configuration initialized with defaults."
 }
@@ -556,14 +586,36 @@ allow_all_models=${CONFIG["allow_all_models"]}
 [API]
 enable_ollama=${CONFIG["enable_ollama"]}
 ollama_url=${CONFIG["ollama_url"]}
+
+# OpenAI API
 enable_openai=${CONFIG["enable_openai"]}
 openai_api_key=${CONFIG["openai_api_key"]}
+openai_base_url=${CONFIG["openai_base_url"]}
+
+# Claude API (Anthropic)
 enable_claude=${CONFIG["enable_claude"]}
 claude_api_key=${CONFIG["claude_api_key"]}
+
+# OpenRouter API
 enable_openrouter=${CONFIG["enable_openrouter"]}
 openrouter_api_key=${CONFIG["openrouter_api_key"]}
+openrouter_base_url=${CONFIG["openrouter_base_url"]}
+
+# Google Gemini API
 enable_gemini=${CONFIG["enable_gemini"]}
 gemini_api_key=${CONFIG["gemini_api_key"]}
+
+# Azure OpenAI API
+enable_azure_openai=${CONFIG["enable_azure_openai"]}
+azure_openai_api_key=${CONFIG["azure_openai_api_key"]}
+azure_openai_endpoint=${CONFIG["azure_openai_endpoint"]}
+azure_deployment_name=${CONFIG["azure_deployment_name"]}
+
+# Groq API
+enable_groq=${CONFIG["enable_groq"]}
+groq_api_key=${CONFIG["groq_api_key"]}
+
+# Custom API
 enable_custom_api=${CONFIG["enable_custom_api"]}
 custom_api_url=${CONFIG["custom_api_url"]}
 
@@ -580,6 +632,11 @@ tts_voice=${CONFIG["tts_voice"]}
 tts_model=${CONFIG["tts_model"]}
 enable_pipelines=${CONFIG["enable_pipelines"]}
 pipelines_port=${CONFIG["pipelines_port"]}
+install_function_calling=${CONFIG["install_function_calling"]}
+install_rate_limiting=${CONFIG["install_rate_limiting"]}
+install_toxic_filter=${CONFIG["install_toxic_filter"]}
+install_libretranslate=${CONFIG["install_libretranslate"]}
+install_langfuse=${CONFIG["install_langfuse"]}
 enable_image_generation=${CONFIG["enable_image_generation"]}
 image_generation_engine=${CONFIG["image_generation_engine"]}
 image_model=${CONFIG["image_model"]}
@@ -596,6 +653,9 @@ secret_key=${CONFIG["secret_key"]}
 enable_api_key=${CONFIG["enable_api_key"]}
 enable_api_key_restrictions=${CONFIG["enable_api_key_restrictions"]}
 cors_allow_origin=${CONFIG["cors_allow_origin"]}
+
+[Telemetry]
+disable_telemetry=${CONFIG["disable_telemetry"]}
 EOL
     
     log "SUCCESS" "Configuration saved successfully."
@@ -621,16 +681,50 @@ configure_interactively() {
         get_input "Ollama URL" "${CONFIG["ollama_url"]}" "ollama_url"
     fi
     
+    # OpenAI API
     get_boolean_input "Enable OpenAI API" "${CONFIG["enable_openai"]}" "enable_openai"
-    
     if [ "${CONFIG["enable_openai"]}" = true ]; then
         get_input "OpenAI API Key" "${CONFIG["openai_api_key"]}" "openai_api_key" true
+        get_input "OpenAI Base URL (for API proxies)" "${CONFIG["openai_base_url"]}" "openai_base_url"
     fi
     
-    get_boolean_input "Enable Claude API" "${CONFIG["enable_claude"]}" "enable_claude"
-    
+    # Claude API
+    get_boolean_input "Enable Claude API (Anthropic)" "${CONFIG["enable_claude"]}" "enable_claude"
     if [ "${CONFIG["enable_claude"]}" = true ]; then
         get_input "Claude API Key" "${CONFIG["claude_api_key"]}" "claude_api_key" true
+    fi
+    
+    # OpenRouter API
+    get_boolean_input "Enable OpenRouter API (unified API for multiple providers)" "${CONFIG["enable_openrouter"]}" "enable_openrouter"
+    if [ "${CONFIG["enable_openrouter"]}" = true ]; then
+        get_input "OpenRouter API Key" "${CONFIG["openrouter_api_key"]}" "openrouter_api_key" true
+        get_input "OpenRouter Base URL" "${CONFIG["openrouter_base_url"]}" "openrouter_base_url"
+    fi
+    
+    # Google Gemini API
+    get_boolean_input "Enable Google Gemini API" "${CONFIG["enable_gemini"]}" "enable_gemini"
+    if [ "${CONFIG["enable_gemini"]}" = true ]; then
+        get_input "Google Gemini API Key" "${CONFIG["gemini_api_key"]}" "gemini_api_key" true
+    fi
+    
+    # Azure OpenAI API
+    get_boolean_input "Enable Azure OpenAI API" "${CONFIG["enable_azure_openai"]}" "enable_azure_openai"
+    if [ "${CONFIG["enable_azure_openai"]}" = true ]; then
+        get_input "Azure OpenAI API Key" "${CONFIG["azure_openai_api_key"]}" "azure_openai_api_key" true
+        get_input "Azure OpenAI Endpoint" "${CONFIG["azure_openai_endpoint"]}" "azure_openai_endpoint"
+        get_input "Azure Deployment Name" "${CONFIG["azure_deployment_name"]}" "azure_deployment_name"
+    fi
+    
+    # Groq API
+    get_boolean_input "Enable Groq API" "${CONFIG["enable_groq"]}" "enable_groq"
+    if [ "${CONFIG["enable_groq"]}" = true ]; then
+        get_input "Groq API Key" "${CONFIG["groq_api_key"]}" "groq_api_key" true
+    fi
+    
+    # Custom API
+    get_boolean_input "Enable Custom API Endpoint" "${CONFIG["enable_custom_api"]}" "enable_custom_api"
+    if [ "${CONFIG["enable_custom_api"]}" = true ]; then
+        get_input "Custom API URL" "${CONFIG["custom_api_url"]}" "custom_api_url"
     fi
     
     echo -e "\n${BLUE}=== Feature Configuration ===${NC}"
@@ -679,6 +773,9 @@ configure_interactively() {
         if [ "${CONFIG["tts_engine"]}" = "openai" ]; then
             get_input "TTS Voice (alloy, echo, fable, onyx, nova, shimmer)" "${CONFIG["tts_voice"]}" "tts_voice"
             get_input "TTS Model (tts-1, tts-1-hd)" "${CONFIG["tts_model"]}" "tts_model"
+        elif [ "${CONFIG["tts_engine"]}" = "elevenlabs" ]; then
+            get_input "ElevenLabs API Key" "" "elevenlabs_api_key" true
+            get_input "ElevenLabs Voice ID" "premade/Adam" "elevenlabs_voice_id"
         fi
     fi
     
@@ -686,6 +783,11 @@ configure_interactively() {
     
     if [ "${CONFIG["enable_pipelines"]}" = true ]; then
         get_input "Pipelines Port" "${CONFIG["pipelines_port"]}" "pipelines_port"
+        get_boolean_input "Install Function Calling Pipeline" "${CONFIG["install_function_calling"]}" "install_function_calling"
+        get_boolean_input "Install Rate Limiting Pipeline" "${CONFIG["install_rate_limiting"]}" "install_rate_limiting"
+        get_boolean_input "Install Toxic Message Filtering Pipeline" "${CONFIG["install_toxic_filter"]}" "install_toxic_filter"
+        get_boolean_input "Install LibreTranslate Pipeline" "${CONFIG["install_libretranslate"]}" "install_libretranslate"
+        get_boolean_input "Install Langfuse Monitoring Pipeline" "${CONFIG["install_langfuse"]}" "install_langfuse"
     fi
     
     get_boolean_input "Enable Image Generation" "${CONFIG["enable_image_generation"]}" "enable_image_generation"
@@ -693,6 +795,12 @@ configure_interactively() {
     if [ "${CONFIG["enable_image_generation"]}" = true ]; then
         get_input "Image Generation Engine (openai, automatic1111, comfyui)" "${CONFIG["image_generation_engine"]}" "image_generation_engine"
         get_input "Image Size (512x512, 1024x1024)" "${CONFIG["image_size"]}" "image_size"
+        
+        if [ "${CONFIG["image_generation_engine"]}" = "automatic1111" ]; then
+            get_input "AUTOMATIC1111 URL" "http://automatic1111:7860" "automatic1111_url"
+        elif [ "${CONFIG["image_generation_engine"]}" = "comfyui" ]; then
+            get_input "ComfyUI URL" "http://comfyui:8188" "comfyui_url"
+        fi
     fi
     
     get_boolean_input "Enable RAG Document Processing" "${CONFIG["enable_rag"]}" "enable_rag"
@@ -857,7 +965,7 @@ EOL
     
     # Add OpenAI configuration
     if [ "${CONFIG["enable_openai"]}" = true ]; then
-        echo "OPENAI_API_BASE_URL=https://api.openai.com/v1" >> "$output_file"
+        echo "OPENAI_API_BASE_URL=${CONFIG["openai_base_url"]}" >> "$output_file"
         echo "OPENAI_API_KEY=${CONFIG["openai_api_key"]}" >> "$output_file"
     fi
     
@@ -869,11 +977,24 @@ EOL
     # Add OpenRouter configuration
     if [ "${CONFIG["enable_openrouter"]}" = true ]; then
         echo "OPENROUTER_API_KEY=${CONFIG["openrouter_api_key"]}" >> "$output_file"
+        echo "OPENROUTER_API_BASE_URL=${CONFIG["openrouter_base_url"]}" >> "$output_file"
     fi
     
     # Add Gemini configuration
     if [ "${CONFIG["enable_gemini"]}" = true ]; then
         echo "GEMINI_API_KEY=${CONFIG["gemini_api_key"]}" >> "$output_file"
+    fi
+    
+    # Add Azure OpenAI configuration
+    if [ "${CONFIG["enable_azure_openai"]}" = true ]; then
+        echo "AZURE_OPENAI_API_KEY=${CONFIG["azure_openai_api_key"]}" >> "$output_file"
+        echo "AZURE_OPENAI_ENDPOINT=${CONFIG["azure_openai_endpoint"]}" >> "$output_file"
+        echo "AZURE_DEPLOYMENT_NAME=${CONFIG["azure_deployment_name"]}" >> "$output_file"
+    fi
+    
+    # Add Groq configuration
+    if [ "${CONFIG["enable_groq"]}" = true ]; then
+        echo "GROQ_API_KEY=${CONFIG["groq_api_key"]}" >> "$output_file"
     fi
     
     # Add Custom API configuration
@@ -951,6 +1072,9 @@ EOL
         if [ "${CONFIG["tts_engine"]}" = "openai" ]; then
             echo "AUDIO_TTS_MODEL=${CONFIG["tts_model"]}" >> "$output_file"
             echo "AUDIO_TTS_VOICE=${CONFIG["tts_voice"]}" >> "$output_file"
+        elif [ "${CONFIG["tts_engine"]}" = "elevenlabs" ]; then
+            echo "ELEVENLABS_API_KEY=${CONFIG["elevenlabs_api_key"]}" >> "$output_file"
+            echo "ELEVENLABS_VOICE_ID=${CONFIG["elevenlabs_voice_id"]}" >> "$output_file"
         fi
     fi
     
@@ -963,6 +1087,33 @@ ENABLE_WEBSOCKET_SUPPORT=true
 WEBSOCKET_MANAGER=redis
 WEBSOCKET_REDIS_URL=redis://redis:6379/0
 EOL
+
+        # Add sample pipelines to install
+        local pipelines_to_install=()
+        
+        if [ "${CONFIG["install_function_calling"]}" = "true" ]; then
+            pipelines_to_install+=("https://github.com/open-webui/pipelines/raw/main/samples/function-calling.yaml")
+        fi
+        
+        if [ "${CONFIG["install_rate_limiting"]}" = "true" ]; then
+            pipelines_to_install+=("https://github.com/open-webui/pipelines/raw/main/samples/rate-limiter.yaml")
+        fi
+        
+        if [ "${CONFIG["install_toxic_filter"]}" = "true" ]; then
+            pipelines_to_install+=("https://github.com/open-webui/pipelines/raw/main/samples/toxicity-filter.yaml")
+        fi
+        
+        if [ "${CONFIG["install_libretranslate"]}" = "true" ]; then
+            pipelines_to_install+=("https://github.com/open-webui/pipelines/raw/main/samples/libretranslate.yaml")
+        fi
+        
+        if [ "${CONFIG["install_langfuse"]}" = "true" ]; then
+            pipelines_to_install+=("https://github.com/open-webui/pipelines/raw/main/samples/langfuse.yaml")
+        fi
+        
+        if [ ${#pipelines_to_install[@]} -gt 0 ]; then
+            echo "PIPELINES_URLS=\"${pipelines_to_install[*]}\"" >> "$output_file"
+        fi
     fi
     
     # Add Image Generation configuration
@@ -978,10 +1129,10 @@ EOL
         # Add engine-specific settings
         case "${CONFIG["image_generation_engine"]}" in
             automatic1111)
-                echo "AUTOMATIC1111_BASE_URL=http://automatic1111:7860" >> "$output_file"
+                echo "AUTOMATIC1111_BASE_URL=${CONFIG["automatic1111_url"]:-http://automatic1111:7860}" >> "$output_file"
                 ;;
             comfyui)
-                echo "COMFYUI_BASE_URL=http://comfyui:8188" >> "$output_file"
+                echo "COMFYUI_BASE_URL=${CONFIG["comfyui_url"]:-http://comfyui:8188}" >> "$output_file"
                 ;;
         esac
     fi
@@ -1077,12 +1228,18 @@ check_deployment_issues() {
     log "INFO" "Checking for common deployment issues..."
     
     # Check if ports are already in use
-    if netstat -tuln 2>/dev/null | grep -q ":${CONFIG["webui_port"]}"; then
+    if command_exists netstat && netstat -tuln 2>/dev/null | grep -q ":${CONFIG["webui_port"]}"; then
+        log "WARNING" "Port ${CONFIG["webui_port"]} is already in use. Please choose a different port."
+    elif command_exists ss && ss -tuln 2>/dev/null | grep -q ":${CONFIG["webui_port"]}"; then
         log "WARNING" "Port ${CONFIG["webui_port"]} is already in use. Please choose a different port."
     fi
     
-    if [ "${CONFIG["enable_pipelines"]}" = true ] && netstat -tuln 2>/dev/null | grep -q ":${CONFIG["pipelines_port"]}"; then
-        log "WARNING" "Port ${CONFIG["pipelines_port"]} is already in use. Please choose a different port."
+    if [ "${CONFIG["enable_pipelines"]}" = true ]; then
+        if command_exists netstat && netstat -tuln 2>/dev/null | grep -q ":${CONFIG["pipelines_port"]}"; then
+            log "WARNING" "Port ${CONFIG["pipelines_port"]} is already in use. Please choose a different port."
+        elif command_exists ss && ss -tuln 2>/dev/null | grep -q ":${CONFIG["pipelines_port"]}"; then
+            log "WARNING" "Port ${CONFIG["pipelines_port"]} is already in use. Please choose a different port."
+        fi
     fi
     
     # Check Docker daemon
@@ -1126,7 +1283,7 @@ verify_deployment() {
     
     if [ "$all_running" = true ]; then
         # Check if web UI is responding
-        local max_attempts=6
+        local max_attempts=12  # Increased from 6 to 12 attempts
         local attempts=0
         local success=false
         
@@ -1140,7 +1297,7 @@ verify_deployment() {
                 success=true
             else
                 log "INFO" "Waiting for Open WebUI to start (attempt $attempts/$max_attempts)..."
-                sleep 5
+                sleep 10  # Increased from 5 to 10 seconds
             fi
         done
         
@@ -1148,6 +1305,7 @@ verify_deployment() {
             log "SUCCESS" "Open WebUI is up and running."
         else
             log "WARNING" "Could not verify that Open WebUI is running properly. It might still be starting up."
+            log "INFO" "You can check logs with: docker compose -f $DOCKER_COMPOSE_FILE logs -f open-webui"
         fi
     else
         log "WARNING" "Not all containers are running. Deployment may have issues."
@@ -1165,7 +1323,15 @@ display_success_message() {
     fi
     
     if [ -z "$server_ip" ]; then
-        server_ip="localhost"
+        # Try to get local IP
+        if command_exists hostname; then
+            server_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+        fi
+        
+        # Fallback to localhost
+        if [ -z "$server_ip" ]; then
+            server_ip="localhost"
+        fi
     fi
     
     local web_url="http://$server_ip:${CONFIG["webui_port"]}"
@@ -1187,6 +1353,11 @@ ${YELLOW}Important Notes:${NC}
 • To stop: ${BLUE}docker compose -f $DOCKER_COMPOSE_FILE down${NC}
 • To restart: ${BLUE}docker compose -f $DOCKER_COMPOSE_FILE restart${NC}
 
+${YELLOW}Quick commands:${NC}
+• Download models: ${BLUE}docker exec -it ollama run llama3${NC}
+• List all models: ${BLUE}docker exec -it ollama ls${NC}
+• Remove models: ${BLUE}docker exec -it ollama rm llama3${NC}
+
 Your configuration has been saved to: ${BLUE}$CONFIG_FILE${NC}
 Docker Compose file: ${BLUE}$DOCKER_COMPOSE_FILE${NC}
 Environment file: ${BLUE}$ENV_FILE${NC}
@@ -1195,7 +1366,7 @@ EOL
 }
 
 #######################################
-# Stop and Clean Functions
+# Management Functions
 #######################################
 
 # Stop Open WebUI
@@ -1205,6 +1376,42 @@ stop_open_webui() {
     if [ -f "$DOCKER_COMPOSE_FILE" ]; then
         docker compose -f "$DOCKER_COMPOSE_FILE" down
         log "SUCCESS" "Open WebUI has been stopped."
+    else
+        log "ERROR" "Docker Compose file not found: $DOCKER_COMPOSE_FILE"
+    fi
+}
+
+# Restart Open WebUI
+restart_open_webui() {
+    log "INFO" "Restarting Open WebUI..."
+    
+    if [ -f "$DOCKER_COMPOSE_FILE" ]; then
+        docker compose -f "$DOCKER_COMPOSE_FILE" restart
+        log "SUCCESS" "Open WebUI has been restarted."
+    else
+        log "ERROR" "Docker Compose file not found: $DOCKER_COMPOSE_FILE"
+    fi
+}
+
+# Update Open WebUI
+update_open_webui() {
+    log "INFO" "Updating Open WebUI..."
+    
+    if [ -f "$DOCKER_COMPOSE_FILE" ]; then
+        docker compose -f "$DOCKER_COMPOSE_FILE" pull
+        docker compose -f "$DOCKER_COMPOSE_FILE" up -d
+        log "SUCCESS" "Open WebUI has been updated."
+    else
+        log "ERROR" "Docker Compose file not found: $DOCKER_COMPOSE_FILE"
+    fi
+}
+
+# Show logs
+show_logs() {
+    log "INFO" "Showing logs for Open WebUI..."
+    
+    if [ -f "$DOCKER_COMPOSE_FILE" ]; then
+        docker compose -f "$DOCKER_COMPOSE_FILE" logs -f
     else
         log "ERROR" "Docker Compose file not found: $DOCKER_COMPOSE_FILE"
     fi
@@ -1275,6 +1482,21 @@ parse_arguments() {
             --no-ollama)
                 CONFIG["enable_ollama"]=false
                 ;;
+            --stop)
+                ACTION="stop"
+                ;;
+            --restart)
+                ACTION="restart"
+                ;;
+            --update)
+                ACTION="update"
+                ;;
+            --logs)
+                ACTION="logs"
+                ;;
+            --clean)
+                ACTION="clean"
+                ;;
             --help)
                 SHOW_HELP=true
                 ;;
@@ -1307,6 +1529,28 @@ EOF
     # Show help and exit if requested
     if [ "$SHOW_HELP" = true ]; then
         show_help
+        exit 0
+    fi
+    
+    # Check if any action is specified
+    if [ -n "$ACTION" ]; then
+        case "$ACTION" in
+            stop)
+                stop_open_webui
+                ;;
+            restart)
+                restart_open_webui
+                ;;
+            update)
+                update_open_webui
+                ;;
+            logs)
+                show_logs
+                ;;
+            clean)
+                clean_open_webui
+                ;;
+        esac
         exit 0
     fi
     
